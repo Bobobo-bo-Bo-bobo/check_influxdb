@@ -1,0 +1,121 @@
+#!/usr/bin/env python
+
+import getopt
+import requests
+import sys
+import time
+
+SHORT_OPTIONS = "hH:p:Sc:"
+LONG_OPTIONS = [
+    "help",
+    "host=",
+    "port=",
+    "ssl",
+    "ca-certificate=",
+]
+
+# Nagios exit codes
+OK = 0
+WARNING = 1
+CRITICAL = 2
+UNKNOWN = 3
+
+
+def usage():
+    """
+    Show usage information
+    :return: None
+    """
+    print("""Usage: %s [-h] [-H <host>] [-p <port>] [-S] [-c <ca_cert>]
+
+  -H <host>                     Connect to <host>.
+  --host=<host>                 Default: localhost
+
+  -S                            Use SSL (https)
+  --ssl
+
+  -c <ca_cert>                  If SSL is used, the file or directory containing the root CA.
+  --ca-certificate=<ca_cert>    If a directory is used, it must be processed by OpenSSL c_rehash command.
+
+  -h                            This text
+  --help
+
+  -p <port>                     Connect to <port>
+  --port=<port>                 Default: 8086
+
+""" % (sys.argv[0], ))
+
+
+def check_influxdb(id_host, id_port, id_ssl=False, id_ca=None):
+    """
+    Connect to InfluxDB and report availability
+    :param id_host: host to connect
+    :param id_port: port to connect
+    :param id_ssl: use SSL
+    :param id_ca: path or directory if CA
+    :return: list of state and message
+    """
+    try:
+        if id_ssl:
+            if id_ca is not None:
+                req = requests.get("https://%s:%u/ping" % (id_host, id_port), verify=id_ca)
+            else:
+                req = requests.get("https://%s:%u/ping" % (id_host, id_port), verify=False)
+        else:
+            req = requests.get("http://%s:%u/ping" % (id_host, id_port))
+
+        delta = req.elapsed.total_seconds()
+
+    except requests.exceptions.RequestException as err:
+        return CRITICAL, "CRITICAL - Can't connect to InfluxDB at %s:%u (SSL: %s): %s" %\
+               (id_host, id_port, str(id_ssl), err.message)
+
+    if req.ok:
+        headers = req.headers
+        if "X-Influxdb-Version" in headers:
+            return OK, "OK - Influx DB %s running on %s:%u (SSL: %s)|time=%fs" %\
+                   (headers["X-Influxdb-Version"], id_host, id_port, str(id_ssl), delta)
+        else:
+            return CRITICAL, "CRITICAL - No InfluxDB found on %s:%u (SSL: %s) - " \
+                             "X-Influxdb-Version header is missing|time=%fs" % (id_host, id_port, str(id_ssl), delta)
+    else:
+        return CRITICAL, "CRITICAL - Request to %s:%u (SSL: %s) failed: %u %s" %\
+               (id_host, id_port, str(id_ssl), req.status_code, req.reason)
+
+if __name__ == "__main__":
+    host = "localhost"
+    port = 8086
+    use_ssl = False
+    ca_cert = None
+
+    try:
+        options, arguments = getopt.getopt(sys.argv[1:], SHORT_OPTIONS, LONG_OPTIONS)
+    except getopt.GetoptError:
+        sys.stderr.write("Error: Can't parse command line arguments\n")
+        usage()
+        sys.exit(UNKNOWN)
+
+    for opt, arg in options:
+        if opt in ("-h", "--help"):
+            usage()
+            sys.exit(0)
+        elif opt in ("-H", "--host"):
+            host = arg
+        elif opt in ("-p", "--port"):
+            try:
+                port = int(arg)
+            except ValueError:
+                sys.stderr.write("Error: Can't convert %s to a number\n" % (arg, ))
+        elif opt in ("-S", "--ssl"):
+            use_ssl = True
+        elif opt in ("-c", "--ca-certificate"):
+            ca_cert = arg
+        else:
+            sys.stderr.write("Error: Unknown option\n")
+            usage()
+            sys.exit(UNKNOWN)
+
+    state, message = check_influxdb(host, port, use_ssl, ca_cert)
+    print(message)
+    sys.exit(state)
+
